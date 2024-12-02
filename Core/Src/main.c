@@ -22,16 +22,31 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct{
+	uint8_t ID;
+	volatile int16_t count;//pulse
+	const float l_angle;//locate
+	volatile float vel;//rad/ms
+} Encoder;
 
+typedef struct{
+	volatile int16_t x;
+	volatile int16_t y;
+	volatile float theta;
+}purpose;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define PI 3.1415
 
+#define r 60//mm
+#define R 160//mm
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,6 +57,12 @@
 /* Private variables ---------------------------------------------------------*/
 FDCAN_HandleTypeDef hfdcan1;
 
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim5;
+TIM_HandleTypeDef htim6;
+TIM_HandleTypeDef htim7;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -51,6 +72,24 @@ FDCAN_FilterTypeDef sFilterConfig;
 
 uint8_t TxData[8] = {};
 uint8_t RxData[8] = {};
+
+const float ppr[3] = {1000, 1000, 1000};
+
+Encoder encoder[3] = {
+		{0, 0, 0},
+		{1, 0, 0},
+		{2, 0, 0}
+};
+
+purpose mokuhyo[1] = {};
+
+volatile float x = 0, y = 0;//mm
+volatile float theta = 0;//rad
+
+volatile float vx = 0, vy = 0;//mm/ms
+volatile float omega = 0;
+
+const int16_t vel_id = 0x100;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,6 +97,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_FDCAN1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM5_Init(void);
+static void MX_TIM6_Init(void);
+static void MX_TIM7_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -122,6 +166,149 @@ void FDCAN_RxTxSettings(void){
 	}
 }
 
+int16_t read_encoder_value_1(void)
+{
+  int32_t count_t = 0;
+  uint32_t enc_buff = TIM2->CNT;
+  TIM2->CNT = 0;
+  if (enc_buff > 0x8fffffff)
+  {
+    count_t = (int32_t)enc_buff*-1;
+  }
+  else
+  {
+    count_t = (int32_t)enc_buff;
+  }
+  return (int16_t)count_t;
+}
+
+int16_t read_encoder_value_2(void)
+{
+  int32_t count_t = 0;
+  uint32_t enc_buff = TIM3->CNT;
+  TIM3->CNT = 0;
+  if (enc_buff > 0x8fffffff)
+  {
+    count_t = (int32_t)enc_buff*-1;
+  }
+  else
+  {
+    count_t = (int32_t)enc_buff;
+  }
+  return (int16_t)count_t;
+}
+
+int16_t read_encoder_value_3(void)
+{
+  int32_t count_t = 0;
+  uint32_t enc_buff = TIM5->CNT;
+  TIM5->CNT = 0;
+  if (enc_buff > 0x8fffffff)
+  {
+    count_t = (int32_t)enc_buff*-1;
+  }
+  else
+  {
+    count_t = (int32_t)enc_buff;
+  }
+  return (int16_t)count_t;
+}
+
+void vel_calc(float Theta, float w1, float w2, float w3, float *Vx, float *Vy, float *Omega){
+
+	float w[3] = {w1, w2, w3};
+
+	float sint = sin(Theta);
+	float cost = cos(Theta);
+
+	float a[3][3] = {
+			{-sint,  cost, R},
+			{ sint, -cost, R},
+			{ cost,  sint, R}
+	};
+
+	float det = a[0][0]*a[1][1]*a[2][2];
+	det += a[1][0]*a[2][1]*a[0][2];
+	det += a[2][0]*a[0][1]*a[1][2];
+	det -= a[2][0]*a[1][1]*a[0][2];
+	det -= a[1][0]*a[0][1]*a[2][2];
+	det -= a[0][0]*a[2][1]*a[1][2];
+
+	float a_in[3][3] = {
+			{( a[1][1]*a[2][2] - a[1][2]*a[2][1])/det, (-a[0][1]*a[2][2] + a[0][2]*a[2][1])/det, ( a[0][1]*a[1][2] - a[0][2]*a[1][1])/det},
+			{(-a[1][0]*a[2][2] + a[1][2]*a[2][0])/det, ( a[0][0]*a[2][2] - a[0][2]*a[2][0])/det, (-a[0][0]*a[1][2] + a[0][2]*a[1][0])/det},
+			{( a[1][0]*a[2][1] - a[1][1]*a[2][0])/det, (-a[0][0]*a[2][1] + a[0][1]*a[2][0])/det, ( a[0][0]*a[1][1] - a[0][1]*a[1][0])/det}
+	};
+
+	*Vx =    r*(a_in[0][0]*w[0] + a_in[0][1]*w[1] + a_in[0][2]*w[2])/2;
+	*Vy =    r*(a_in[1][0]*w[0] + a_in[1][1]*w[1] + a_in[1][2]*w[2])/2;
+	*Omega = r*(a_in[2][0]*w[0] + a_in[2][1]*w[1] + a_in[2][2]*w[2])/2;
+}
+
+void vel_Tx(int16_t V_X, int16_t V_Y, int16_t Omega){
+	TxHeader.Identifier = vel_id;
+	uint8_t TxData_vel[8] = {};
+
+	TxData_vel[0] = (int16_t)(V_X) >> 8;
+	TxData_vel[1] = (uint8_t)((int16_t)(V_X) & 0xff);
+	TxData_vel[2] = (int16_t)(V_Y) >> 8;
+	TxData_vel[3] = (uint8_t)((int16_t)(V_Y) & 0xff);
+	TxData_vel[4] = (int16_t)(Omega) >> 8;
+	TxData_vel[5] = (uint8_t)((int16_t)(Omega) & 0xff);
+
+	if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, TxData_vel) != HAL_OK){
+		printf("add_message_vel is error\r\n");
+		Error_Handler();
+	}
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if (&htim6 == htim) {
+		float dt = 1;//ms
+		float vx = 0, vy = 0;//mm/ms
+		float omega = 0;//rad/ms
+		encoder[0].count = read_encoder_value_1();
+		encoder[1].count = read_encoder_value_2();
+		encoder[2].count = read_encoder_value_3();
+		for (int i = 0; i < 3; i++) {
+			encoder[i].vel = 2*PI*((float)encoder[i].count/ppr[i])/dt;
+		}
+		vel_calc(theta, encoder[0].vel, encoder[1].vel, encoder[2].vel, &vx, &vy, &omega);
+
+		x += vx * dt;
+		y += vy * dt;
+		theta += omega * dt	;
+
+		theta = fmodf(theta, 2*PI);
+	}
+	if (&htim7 == htim) {
+		float k_p = 0.001, k_i = 0, k_d = 0;
+		float k_p_t = 1, k_i_t = 0, k_d_t = 0;
+		float hensax = mokuhyo[m_state].x - x;
+		float dx = (float)x - p_x;
+		mokuhyo[m_state].indx += hensax;
+		vx = (k_p*hensax + k_i*mokuhyo[m_state].indx + k_d*dx);
+
+		p_x = x;
+
+		float hensay = mokuhyo[m_state].y -y;
+		float dy = (float)y - p_y;
+		mokuhyo[m_state].indy += hensay;
+		vy = (k_p*hensay + k_i*mokuhyo[m_state].indy + k_d*dy);
+
+		p_y = y;
+
+		float hensat = mokuhyo[m_state].theta - theta;
+		float dt = theta - p_t;
+		mokuhyo[m_state].indt += hensat;
+		omega =(k_p_t*hensat + k_i_t*mokuhyo[m_state].indt + k_d_t*dt);
+
+		p_t = theta;
+		int16_t vx_tusin = (int16_t)(vx * 1000);
+		int16_t vy_tusin = (int16_t)(vy * 1000);
+		int16_t omega_tusin = (int16_t)(omega * 400);
+	}
+}
 
 int _write(int file, char *ptr, int len)
 {
@@ -161,16 +348,30 @@ int main(void)
   MX_GPIO_Init();
   MX_FDCAN1_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM5_Init();
+  MX_TIM6_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   printf("start\r\n");
   printf("can start\r\n");
   FDCAN_RxTxSettings();
+  HAL_TIM_Base_Start_IT(&htim6);
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim5, TIM_CHANNEL_ALL);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  //int count = read_encoder_value_1();
+	  //printf("%d\r\n", count);
+		vel_Tx(vx_tusin, vy_tusin, omega_tusin);
+	  printf("%f, %f, %f, %f, %f, %f\r\n", x, y, theta, vx, vy, omega);
+	  HAL_Delay(10);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -268,6 +469,229 @@ static void MX_FDCAN1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 0;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 65535;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim5, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 9;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 7999;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+
+  /* USER CODE BEGIN TIM7_Init 0 */
+
+  /* USER CODE END TIM7_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM7_Init 1 */
+
+  /* USER CODE END TIM7_Init 1 */
+  htim7.Instance = TIM7;
+  htim7.Init.Prescaler = 9;
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 7999;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM7_Init 2 */
+
+  /* USER CODE END TIM7_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -328,6 +752,8 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
