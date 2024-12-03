@@ -81,7 +81,9 @@ Encoder encoder[3] = {
 		{2, 0, 0}
 };
 
-purpose mokuhyo[1] = {};
+purpose mokuhyo[1] = {
+		{0, 100, 0}
+};
 
 volatile float x = 0, y = 0;//mm
 volatile float theta = 0;//rad
@@ -90,6 +92,12 @@ volatile float vx = 0, vy = 0;//mm/ms
 volatile float omega = 0;
 
 const int16_t vel_id = 0x100;
+
+volatile float p_x= 0, p_y = 0, p_t = 0;
+
+int16_t vx_tusin = 0, vy_tusin = 0, omega_tusin = 0;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -282,31 +290,33 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		theta = fmodf(theta, 2*PI);
 	}
 	if (&htim7 == htim) {
+		int16_t m_state = 0;
 		float k_p = 0.001, k_i = 0, k_d = 0;
 		float k_p_t = 1, k_i_t = 0, k_d_t = 0;
 		float hensax = mokuhyo[m_state].x - x;
 		float dx = (float)x - p_x;
-		mokuhyo[m_state].indx += hensax;
-		vx = (k_p*hensax + k_i*mokuhyo[m_state].indx + k_d*dx);
+		/*
+		mokuhyo[m_state].indx += hensax;*/
+		vx = (k_p*hensax/* + k_i*mokuhyo[m_state].indx + k_d*dx*/);
 
 		p_x = x;
 
 		float hensay = mokuhyo[m_state].y -y;
-		float dy = (float)y - p_y;
-		mokuhyo[m_state].indy += hensay;
-		vy = (k_p*hensay + k_i*mokuhyo[m_state].indy + k_d*dy);
+		float dy = (float)y - p_y;/*
+		mokuhyo[m_state].indy += hensay;*/
+		vy = (k_p*hensay/* + k_i*mokuhyo[m_state].indy + k_d*dy*/);
 
 		p_y = y;
 
 		float hensat = mokuhyo[m_state].theta - theta;
-		float dt = theta - p_t;
-		mokuhyo[m_state].indt += hensat;
-		omega =(k_p_t*hensat + k_i_t*mokuhyo[m_state].indt + k_d_t*dt);
+		float dt = theta - p_t;/*
+		mokuhyo[m_state].indt += hensat;*/
+		omega =(k_p_t*hensat/* + k_i_t*mokuhyo[m_state].indt + k_d_t*dt*/);
 
 		p_t = theta;
-		int16_t vx_tusin = (int16_t)(vx * 1000);
-		int16_t vy_tusin = (int16_t)(vy * 1000);
-		int16_t omega_tusin = (int16_t)(omega * 400);
+		vx_tusin = (int16_t)(vx * 1000);
+		vy_tusin = (int16_t)(vy * 1000);
+		omega_tusin = (int16_t)(omega * 400);
 	}
 }
 
@@ -358,6 +368,7 @@ int main(void)
   printf("can start\r\n");
   FDCAN_RxTxSettings();
   HAL_TIM_Base_Start_IT(&htim6);
+  HAL_TIM_Base_Start_IT(&htim7);
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim5, TIM_CHANNEL_ALL);
