@@ -40,7 +40,7 @@ typedef struct{
 #define PI 3.1415
 
 #define r 60//mm
-#define R 160//mm
+#define R 144//mm
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -75,7 +75,7 @@ Encoder encoder[3] = {
 		{2, 0, 0}
 };
 
-volatile float x = 0, y = 0;//mm
+volatile float x = 0, y = 288;//mm
 volatile float theta = 0;//rad
 
 
